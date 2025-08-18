@@ -1,0 +1,1 @@
+pip install python-telegram-bot~=21.6 aiohttp

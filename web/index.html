@@ -1,0 +1,513 @@
+<!-- filename: web/index.html -->
+<!doctype html>
+<html lang="vi">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Sổ chi tiêu</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0f1115;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --card: #171923;
+      --border: #222;
+      --accent: #22c55e;
+      --danger: #ef4444;
+      --safe: env(safe-area-inset-bottom, 0px)
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent
+    }
+
+    html,
+    body {
+      height: 100%
+    }
+
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      background: var(--bg);
+      color: var(--text)
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      padding: 12px 16px;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      z-index: 10;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between
+    }
+
+    /* progress bar anchored to header bottom */
+    .progress {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 2px;
+      background: var(--accent);
+      width: 0%;
+      opacity: 0;
+      pointer-events: none;
+      transition: width .4s ease, opacity .2s
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 16px
+    }
+
+    .badge {
+      padding: 4px 8px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px
+    }
+
+    .container {
+      padding: 12px;
+      max-width: 960px;
+      margin: 0 auto
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      align-items: center
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #1f2937;
+      color: var(--text);
+      cursor: pointer
+    }
+
+    .btn:disabled {
+      opacity: .6;
+      cursor: not-allowed
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      border-color: #16a34a;
+      color: #07110b;
+      font-weight: 600
+    }
+
+    .btn-danger {
+      background: var(--danger);
+      border-color: #b91c1c;
+      color: #fff
+    }
+
+    .form {
+      padding: 12px;
+      display: grid;
+      gap: 10px
+    }
+
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      padding: 12px;
+      border-radius: 10px;
+      border: 1px solid #2a2f3c;
+      background: #0e111a;
+      color: var(--text);
+      font-size: 15px
+    }
+
+    textarea {
+      min-height: 72px;
+      resize: vertical
+    }
+
+    #list {
+      margin-top: 12px
+    }
+
+
+    /* Item: thêm khoảng cách dọc nhỏ để khi amount xuống hàng vẫn thoáng */
+    .item {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border-bottom: 1px dashed #262a36;
+    }
+
+    .item:last-child {
+      border-bottom: none
+    }
+
+    /* ========== CARD/LIST LAYOUT CHỐNG VỠ ========== */
+    /* Hàng tiêu đề mỗi item: dùng grid thay vì flex để tự xuống dòng gọn gàng */
+    .top {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      /* trái: title co giãn, phải: amount */
+      align-items: start;
+      gap: 8px;
+    }
+
+    /* Màn hình hẹp (điện thoại): amount xuống dòng riêng, canh phải */
+    @media (max-width: 420px) {
+      .top {
+        grid-template-columns: 1fr;
+        /* amount xuống hàng 2 */
+      }
+
+      .top .amount {
+        justify-self: end;
+        /* canh phải cho đẹp */
+      }
+    }
+
+    /* Tiêu đề (merchant) – cho phép 2 dòng, không tràn khung */
+    .title {
+      font-weight: 600;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      /* 2 dòng trên mobile để không mất chữ */
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      word-break: break-word;
+      /* cắt từ dài */
+      overflow-wrap: anywhere;
+      /* phá từ nếu cần để không vỡ layout */
+    }
+
+    @media (min-width: 700px) {
+      .title {
+        -webkit-line-clamp: 1;
+        /* desktop về 1 dòng, gọn hơn */
+      }
+    }
+
+    /* Số tiền – luôn gọn, không vỡ; co chữ tuỳ độ rộng */
+    .amount {
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      /* cột số đều */
+      white-space: nowrap;
+      /* một khối số, không bị bẻ giữa nhóm */
+      max-width: 100%;
+      font-size: clamp(14px, 4.5vw, 18px);
+      /* tự co trên màn nhỏ, không tràn */
+      line-height: 1.15;
+    }
+
+    .amount.expense {
+      color: var(--danger);
+    }
+
+    .amount.income {
+      color: var(--accent);
+    }
+
+    /* Meta – cho phép wrap mạnh tay để không tràn */
+    .meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .empty {
+      color: var(--muted);
+      padding: 16px;
+      text-align: center
+    }
+
+    @media (min-width:700px) {
+      h1 {
+        font-size: 18px
+      }
+
+      .grid2 {
+        grid-template-columns: 240px 1fr
+      }
+
+      .top .amount {
+        font-size: 18px
+      }
+    }
+
+    .sheet {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      transform: translateY(100%);
+      transition: transform .25s ease;
+      z-index: 50;
+      background: var(--card);
+      border-top: 1px solid var(--border);
+      border-top-left-radius: 16px;
+      border-top-right-radius: 16px;
+      box-shadow: 0 -8px 24px rgba(0, 0, 0, .35)
+    }
+
+    .sheet.open {
+      transform: translateY(0)
+    }
+
+    .sheet .drag {
+      width: 40px;
+      height: 4px;
+      background: #3a4152;
+      border-radius: 99px;
+      margin: 8px auto
+    }
+
+    .sheet .wrap {
+      padding: 12px 12px calc(12px + var(--safe))
+    }
+
+    .sheet .row {
+      display: grid;
+      gap: 8px;
+      margin-bottom: 10px
+    }
+
+    .sheet .row2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px
+    }
+
+    .sheet .head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px
+    }
+
+    .sheet .head h2 {
+      margin: 0;
+      font-size: 15px
+    }
+
+    .mainpad {
+      height: 70px
+    }
+
+    /* spinner + skeleton + amount colors */
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid transparent;
+      border-top-color: var(--text);
+      border-right-color: var(--text);
+      border-radius: 50%;
+      animation: spin .8s linear infinite
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg)
+      }
+    }
+
+    body[data-loading="1"] .btn {
+      pointer-events: none;
+      opacity: .7
+    }
+
+    .amount.expense {
+      color: var(--danger)
+    }
+
+    .amount.income {
+      color: var(--accent)
+    }
+
+    .skeleton .title,
+    .skeleton .meta span {
+      display: inline-block;
+      background: linear-gradient(90deg, #2a2f3c, #3a4152, #2a2f3c);
+      background-size: 200% 100%;
+      animation: shimmer 1.2s linear infinite;
+      color: transparent;
+      border-radius: 6px
+    }
+
+    .skeleton .title {
+      height: 16px;
+      width: 40%
+    }
+
+    .skeleton .meta span {
+      height: 12px;
+      width: 20%
+    }
+
+    @keyframes shimmer {
+      0% {
+        background-position: 200% 0
+      }
+
+      100% {
+        background-position: -200% 0
+      }
+    }
+  </style>
+  <!-- [ADDED] CSS tối giản cho stat + toast (chèn vào <style> chính nếu muốn tách) -->
+  <style>
+    .stat-title {
+      font-size: 12px;
+      color: var(--muted)
+    }
+
+    .stat-value {
+      font-weight: 800;
+      font-size: 15px;
+      margin-top: 2px
+    }
+
+    .stat-sub {
+      font-size: 11px;
+      color: var(--muted)
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0)
+    }
+  </style>
+</head>
+
+<body>
+  <header>
+    <h1>Sổ chi tiêu</h1>
+    <div class="toolbar">
+      <span id="user" class="badge">Đang đăng nhập…</span>
+      <span id="net" class="spinner" aria-hidden="true" style="display:none"></span>
+      <button id="reload" class="btn">Tải lại</button>
+      <button id="add-open" class="btn btn-primary">Thêm</button> <!-- [ADDED] -->
+    </div>
+    <div id="bar" class="progress" aria-hidden="true"></div>
+  </header>
+
+  <div class="container">
+    <!-- Quick add -->
+    <!-- <div class="card">
+      <form id="quick" class="form" autocomplete="off" novalidate>
+        <input id="q-merchant" placeholder="Diễn giải (VD: GUARDIAN SHOP 56)" />
+        <div class="grid2">
+          <input id="q-amount" inputmode="decimal" placeholder="Số tiền (VND)" />
+          <input id="q-date" type="date" />
+        </div>
+        <div class="grid2">
+          <select id="q-type">
+            <option value="expense">Chi</option>
+            <option value="income">Thu</option>
+          </select>
+          <div></div>
+        </div>
+        <div class="grid2">
+          <select id="q-category"></select>
+          <input id="q-note" placeholder="Ghi chú (tuỳ chọn)" />
+        </div>
+        <button class="btn btn-primary" id="q-add" type="submit">Thêm</button>
+      </form>
+    </div> -->
+    <div id="stats" class="card" style="margin-top:12px">
+      <div class="stats-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:12px">
+        <div class="stat">
+          <div class="stat-title">Hôm nay</div>
+          <div class="stat-value" id="stats-day">0 ₫</div>
+          <div class="stat-sub">Tổng chi</div>
+        </div>
+        <div class="stat">
+          <div class="stat-title">Tháng này</div>
+          <div class="stat-value" id="stats-month">0 ₫</div>
+          <div class="stat-sub">Tổng chi</div>
+        </div>
+        <div class="stat">
+          <div class="stat-title">Năm nay</div>
+          <div class="stat-value" id="stats-year">0 ₫</div>
+          <div class="stat-sub">Tổng chi</div>
+        </div>
+      </div>
+    </div>
+    <div id="list" class="card"></div>
+    <p class="badge" style="display:block;margin-top:10px">Mẹo: Chạm mục để sửa.</p>
+    <div class="mainpad"></div>
+  </div>
+
+  <!-- Bottom sheet editor -->
+  <div id="sheet" class="sheet" aria-hidden="true">
+    <div class="drag"></div>
+    <div class="wrap">
+      <div class="head">
+        <h2 id="sheet-title">Thêm giao dịch</h2>
+        <button id="sheet-close" class="btn">Đóng</button>
+      </div>
+      <div class="row"><input id="e-merchant" placeholder="Diễn giải" /></div>
+      <div class="row row2">
+        <input id="e-amount" inputmode="decimal" placeholder="Số tiền (VND)" />
+        <input id="e-date" type="date" />
+      </div>
+      <div class="row row2">
+        <select id="e-category"></select>
+        <input id="e-note" placeholder="Ghi chú" />
+      </div>
+      <div class="row row2">
+        <select id="e-type">
+          <option value="expense">Chi</option>
+          <option value="income">Thu</option>
+        </select>
+        <div></div>
+      </div>
+      <div class="row" style="display:flex;gap:8px;justify-content:flex-end">
+        <button id="e-delete" class="btn btn-danger" style="display:none">Xoá</button>
+        <button id="e-save" class="btn btn-primary">Lưu</button>
+      </div>
+    </div>
+  </div>
+  <!-- [ADDED] Toast container (đặt trước </body>) -->
+  <div id="toast" class="toast" aria-live="polite"
+    style="position:fixed;left:50%;bottom:calc(12px + var(--safe));transform:translateX(-50%) translateY(20px);background:#111827;color:#e5e7eb;padding:10px 14px;border:1px solid #222;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:opacity .2s, transform .2s;z-index:60;max-width:90%;white-space:pre-line">
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+
+</html>

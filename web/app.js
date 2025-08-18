@@ -1,0 +1,639 @@
+// filename: web/app.js
+// Mobile-first Telegram WebApp UI + caching + loading bar + sorted list + editor fixes
+const APPS_SCRIPT_ID = "AKfycbxfGkJLQ9i-vH9z2TxhZPNVr4mqd5_zOIfyrN9KY2d8RTvhvvQXwc-D3v7CC5EQx8qq6Q";
+const APPS_SCRIPT_URL = `https://script.google.com/macros/s/${APPS_SCRIPT_ID}/exec`;
+const tg = window.Telegram?.WebApp;
+
+// [ADDED] Toast nhỏ gọn (không dùng alert)
+class Toast {
+    static show(message, timeout = 1800) {
+        const el = document.getElementById("toast");
+        if (!el) return;
+        el.textContent = message || "";
+        el.classList.add("show");
+        clearTimeout(this._t);
+        this._t = setTimeout(() => el.classList.remove("show"), timeout);
+    }
+}
+
+class Api {
+    constructor(base, initDataB64) {
+        this.base = base;
+        this.initDataB64 = initDataB64 || "";
+    }
+    async call(action, body = {}) {
+        const started = performance.now();
+        const req = { action, initDataB64: this.initDataB64, ...body };
+        try {
+            NetIndicator.show();
+            console.groupCollapsed(`[API] → ${action}`);
+            console.log("Request", req);
+            const res = await fetch(this.base, {
+                method: "POST",
+                headers: { "Content-Type": "text/plain;charset=UTF-8" },
+                body: JSON.stringify(req),
+            });
+            const text = await res.text();
+            let data;
+            try {
+                data = JSON.parse(text);
+            } catch {
+                data = { ok: false, error: `Non-JSON (${res.status})`, _raw: text.slice(0, 200) };
+            }
+            const ms = Math.round(performance.now() - started);
+            console.log("Status", res.status, `${ms}ms`);
+            console.log("Response", data);
+            console.groupEnd();
+            return data;
+        } catch (e) {
+            const ms = Math.round(performance.now() - started);
+            console.groupCollapsed(`[API] × ${action} (${ms}ms)`);
+            console.error(e);
+            console.groupEnd();
+            const msg = e?.message || String(e);
+            Toast.show({ title: "Lỗi mạng", message: msg, buttons: [{ type: "ok" }] });
+            return { ok: false, error: msg };
+        } finally {
+            NetIndicator.hide();
+        }
+    }
+}
+
+/* Spinner for network */
+class NetIndicator {
+    static _n = 0;
+    static _el() {
+        return document.getElementById("net");
+    }
+    static show() {
+        this._n++;
+        const el = this._el();
+        if (el) el.style.display = "inline-block";
+        document.body.dataset.loading = "1";
+    }
+    static hide() {
+        if (this._n > 0) this._n--;
+        if (this._n === 0) {
+            const el = this._el();
+            if (el) el.style.display = "none";
+            document.body.removeAttribute("data-loading");
+        }
+    }
+}
+
+/* Loading bar for list refresh */
+class LoadBar {
+    static _active = 0;
+    static el() {
+        return document.getElementById("bar");
+    }
+    static start() {
+        this._active++;
+        const el = this.el();
+        if (!el) return;
+        if (this._active === 1) {
+            el.style.transition = "none";
+            el.style.opacity = "1";
+            el.style.width = "0%";
+            void el.offsetWidth; // reflow
+            el.style.transition = "width .4s ease, opacity .2s";
+            el.style.width = "80%";
+        }
+    }
+    static done() {
+        if (this._active > 0) this._active--;
+        const el = this.el();
+        if (!el) return;
+        if (this._active === 0) {
+            el.style.width = "100%";
+            setTimeout(() => {
+                el.style.opacity = "0";
+            }, 250);
+            setTimeout(() => {
+                el.style.transition = "none";
+                el.style.width = "0%";
+            }, 500);
+        }
+    }
+}
+
+/* Cache for categories (localStorage) */
+class CategoryCache {
+    static key = "ct:categories:v1";
+    static ttlMs = 12 * 60 * 60 * 1000;
+    static get() {
+        try {
+            const s = localStorage.getItem(this.key);
+            if (!s) return null;
+            const o = JSON.parse(s);
+            if (!o || !Array.isArray(o.items)) return null;
+            if (Date.now() - (o.t || 0) > this.ttlMs) return null;
+            return o.items;
+        } catch {
+            return null;
+        }
+    }
+    static set(items) {
+        try {
+            localStorage.setItem(this.key, JSON.stringify({ t: Date.now(), items }));
+        } catch {}
+    }
+    static clear() {
+        try {
+            localStorage.removeItem(this.key);
+        } catch {}
+    }
+}
+
+/* Cache for list items (per-user) */
+class ListCache {
+    static ttlMs = 5 * 60 * 1000; // 5 phút
+    static key(uid) {
+        return `ct:list:${uid || "anon"}:v1`;
+    }
+    static get(uid) {
+        try {
+            const s = localStorage.getItem(this.key(uid));
+            if (!s) return null;
+            const o = JSON.parse(s);
+            if (!o || !Array.isArray(o.items)) return null;
+            if (Date.now() - (o.t || 0) > this.ttlMs) return null;
+            return o;
+        } catch {
+            return null;
+        }
+    }
+    static set(uid, items, rev) {
+        try {
+            localStorage.setItem(this.key(uid), JSON.stringify({ t: Date.now(), items, rev }));
+        } catch {}
+    }
+    static clear(uid) {
+        try {
+            localStorage.removeItem(this.key(uid));
+        } catch {}
+    }
+}
+
+class ExpenseApp {
+    constructor() {
+        const initDataRaw = tg?.initData || "";
+        this.initDataRaw = initDataRaw;
+        this.initDataB64 = initDataRaw ? btoa(initDataRaw) : "";
+        this.api = new Api(APPS_SCRIPT_URL, this.initDataB64);
+
+        this.user = null;
+        this.items = [];
+        this.lastRev = null;
+
+        this.categories = [];
+        this.$user = document.getElementById("user");
+        this.$list = document.getElementById("list");
+        this.$reload = document.getElementById("reload");
+        this.$addOpen = document.getElementById("add-open"); // [ADDED]
+        // stats nodes
+        this.$statsDay = document.getElementById("stats-day"); // [ADDED]
+        this.$statsMonth = document.getElementById("stats-month"); // [ADDED]
+        this.$statsYear = document.getElementById("stats-year"); // [ADDED]
+
+        // Editor (giữ nguyên)
+        this.$sheet = document.getElementById("sheet");
+        this.$sheetTitle = document.getElementById("sheet-title");
+        this.$sheetClose = document.getElementById("sheet-close");
+        this.$eMerchant = document.getElementById("e-merchant");
+        this.$eAmount = document.getElementById("e-amount");
+        this.$eDate = document.getElementById("e-date");
+        this.$eCategory = document.getElementById("e-category");
+        this.$eType = document.getElementById("e-type");
+        this.$eNote = document.getElementById("e-note");
+        this.$eSave = document.getElementById("e-save");
+        this.$eDelete = document.getElementById("e-delete");
+        this.editingId = null;
+        this._busy = false;
+    }
+
+    async init() {
+        this.applyThemeFromTelegram();
+        this.bindEvents();
+        if (tg?.ready) tg.ready();
+        tg?.expand?.();
+        this.setUserFromInitData();
+        this.setUserBadge(this.user ? `@${this.user.username || this.user.id}` : "Đang tải…");
+
+        this._printInitDebug();
+        window.printInitDebug = () => this._printInitDebug();
+        window.copyInitDebug = async () => {
+            const obj = this._buildInitDebug();
+            const text = JSON.stringify(obj, null, 2);
+            try {
+                await navigator.clipboard.writeText(text);
+                tg?.showPopup ? tg.showPopup({ title: "Debug", message: "Đã copy debug JSON vào clipboard.", buttons: [{ type: "ok" }] }) : alert("Đã copy debug JSON.");
+            } catch (e) {
+                console.warn("Clipboard write failed:", e);
+            }
+        };
+
+        await this.loadCategories();
+        await this.loadList(); // dùng cache nếu có
+    }
+
+    _printInitDebug() {
+        const dbg = this._buildInitDebug();
+        console.groupCollapsed("[INITDATA] Tổng quan");
+        console.log({
+            platform: tg?.platform,
+            version: tg?.version,
+            init_len: dbg.input.init_len,
+            init_head: dbg.input.init_head,
+            init_tail: dbg.input.init_tail,
+            init_b64_len: dbg.input_b64.init_b64_len,
+            b64_head: dbg.input_b64.b64_head,
+            b64_tail: dbg.input_b64.b64_tail,
+            has_user: dbg.hash.has_user,
+            hash_got: dbg.hash.hash_got,
+        });
+        console.groupEnd();
+        console.group("[INITDATA] Cặp key=value (RAW & DEC)");
+        dbg.pairs.forEach((p, i) => console.log(`pair[${i + 1}]`, p));
+        console.groupEnd();
+        console.group("[INITDATA] DCS (sorted by decoded key; bỏ hash/signature)");
+        console.log("keys_sorted", dbg.keys_sorted);
+        dbg.dcs_lines.forEach((line, i) => console.log(`line ${i + 1}:`, line));
+        console.groupEnd();
+    }
+    _buildInitDebug() {
+        const init = this.initDataRaw || "";
+        const pairs = this._parseRawPairs(init);
+        const dcsObj = this._buildDCSFromPairs(pairs);
+        const search = new URLSearchParams(init);
+        let hashGot = "",
+            hasUser = false;
+        try {
+            hashGot = (search.get("hash") || "").toLowerCase();
+            hasUser = !!search.get("user");
+        } catch {}
+        return {
+            input: { init_len: init.length, init_head: this._safeHeadTail(init).head, init_tail: this._safeHeadTail(init).tail },
+            input_b64: (() => {
+                const b64 = this.initDataB64 || "";
+                const ht = this._safeHeadTail(b64);
+                return { init_b64_len: b64.length, b64_head: ht.head, b64_tail: ht.tail };
+            })(),
+            pairs: pairs.map((p) => ({ kRaw: p.kRaw, vRaw: p.vRaw, kDec: p.kDec, vDec: p.vDec })),
+            keys_sorted: dcsObj.keys_sorted,
+            dcs_lines: dcsObj.lines,
+            hash: { hash_got: hashGot, has_user: hasUser },
+        };
+    }
+    _parseRawPairs(qs) {
+        const out = [];
+        (qs || "").split("&").forEach((pair) => {
+            const i = pair.indexOf("=");
+            if (i < 0) return;
+            const kRaw = pair.slice(0, i),
+                vRaw = pair.slice(i + 1);
+            let kDec = "",
+                vDec = "";
+            try {
+                kDec = decodeURIComponent(kRaw);
+            } catch {
+                kDec = kRaw;
+            }
+            try {
+                vDec = decodeURIComponent(vRaw);
+            } catch {
+                vDec = vRaw;
+            }
+            out.push({ kRaw, vRaw, kDec, vDec });
+        });
+        return out;
+    }
+    _buildDCSFromPairs(pairs) {
+        const filtered = pairs.filter((p) => p.kDec !== "hash" && p.kDec !== "signature");
+        filtered.sort((a, b) => a.kDec.localeCompare(b.kDec));
+        const lines = filtered.map((p) => `${p.kRaw}=${p.vRaw}`);
+        const keys_sorted = filtered.map((p) => p.kDec);
+        return { lines, keys_sorted };
+    }
+    _safeHeadTail(s, n = 120) {
+        if (!s) return { head: "", tail: "" };
+        return { head: s.slice(0, n), tail: s.slice(-n) };
+    }
+
+    /* ==== Date helpers: normalize to input[type=date] YYYY-MM-DD ==== */
+    toISODate(val) {
+        if (!val && val !== 0) return "";
+        if (val instanceof Date) return this._fmtDate(val);
+        if (typeof val === "number") return this._fmtDate(new Date(val));
+        if (typeof val === "string") {
+            if (/^\d{4}-\d{2}-\d{2}$/.test(val)) return val;
+            const d = new Date(val);
+            return isNaN(d.getTime()) ? "" : this._fmtDate(d);
+        }
+        // Apps Script may send Date as object in JSON -> handled above; otherwise unknown
+        try {
+            const d = new Date(val);
+            return isNaN(d.getTime()) ? "" : this._fmtDate(d);
+        } catch {
+            return "";
+        }
+    }
+    _fmtDate(d) {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        const day = String(d.getDate()).padStart(2, "0");
+        return `${y}-${m}-${day}`;
+    }
+    dateKey(val) {
+        const iso = this.toISODate(val);
+        if (!iso) return 0;
+        const t = Date.parse(`${iso}T00:00:00`);
+        return isNaN(t) ? 0 : t;
+    }
+    sortByDateDesc(items) {
+        return (items || []).slice().sort((a, b) => {
+            const da = this.dateKey(a?.date),
+                db = this.dateKey(b?.date);
+            if (db !== da) return db - da; // mới → cũ
+            // tie-breaker: stable by id desc
+            return String(b?.id || "").localeCompare(String(a?.id || ""));
+        });
+    }
+
+    applyThemeFromTelegram() {
+        const tp = tg?.themeParams || {};
+        const map = { "--bg": tp.bg_color, "--text": tp.text_color, "--muted": tp.hint_color, "--card": tp.secondary_bg_color, "--border": tp.section_separator_color, "--accent": tp.button_color };
+        for (const k in map) if (map[k]) document.documentElement.style.setProperty(k, map[k]);
+        try {
+            tg?.setHeaderColor?.("secondary_bg_color");
+            tg?.setBackgroundColor?.(tp.secondary_bg_color || "#171923");
+        } catch {}
+    }
+
+    // [UPDATED] bindEvents: gắn nút Thêm, bỏ lắng nghe quick form
+    bindEvents() {
+        this.$reload.addEventListener("click", () => this.loadList(true));
+        this.$addOpen?.addEventListener("click", () => this.openEditor(null)); // [ADDED]
+
+        this.$sheetClose.addEventListener("click", () => this.closeSheet());
+        this.$eSave.addEventListener("click", () => this.saveEditor());
+        this.$eDelete.addEventListener("click", () => this.deleteItem());
+        this.$list.addEventListener("click", (e) => {
+            const root = e.target.closest(".item");
+            if (!root) return;
+            const id = root.dataset.id;
+            if (!id) return;
+            const it = this.items.find((x) => x.id === id);
+            if (!it) return;
+            this.openEditor(it);
+        });
+        const haptic = () => tg?.HapticFeedback?.impactOccurred?.("light");
+        ["click", "touchend"].forEach((ev) => {
+            document.querySelectorAll(".btn").forEach((b) => b.addEventListener(ev, haptic, { passive: true }));
+        });
+    }
+
+    renderCatOptions() {
+        const opts = this.categories.map((c) => `<option value="${c}">${c}</option>`).join("");
+        const q = document.getElementById("q-category"); // có thể KHÔNG tồn tại (đã bỏ Quick add)
+        if (q) q.innerHTML = opts;
+        const e = document.getElementById("e-category");
+        if (e) e.innerHTML = opts;
+    }
+    setUserBadge(text) {
+        if (this.$user) this.$user.textContent = text;
+    }
+
+    setUserFromInitData() {
+        let u = tg?.initDataUnsafe?.user;
+        if (!u) {
+            try {
+                const p = new URLSearchParams(tg?.initData || "");
+                const js = p.get("user");
+                if (js) u = JSON.parse(js);
+            } catch {}
+        }
+        this.user = u || null;
+        if (!this.user) {
+            const inTg = !!tg && (tg?.platform || "").length > 0;
+            this.setUserBadge(inTg ? "Không nhận được initData" : "Không chạy trong Telegram");
+            console.debug("[TG]", { platform: tg?.platform, hasUnsafe: !!tg?.initDataUnsafe, hasUser: !!tg?.initDataUnsafe?.user, initDataLen: (tg?.initData || "").length });
+        } else {
+            this.setUserBadge(`@${this.user.username || this.user.id}`);
+        }
+    }
+
+    async loadCategories(force = false) {
+        const cached = CategoryCache.get();
+        if (cached && !force) {
+            this.categories = cached;
+            this.renderCatOptions();
+            return;
+        }
+        const r = await this.api.call("categories");
+        this.categories = r.ok ? r.items : cached || ["Uncategorized"];
+        if (r.ok) CategoryCache.set(this.categories);
+        this.renderCatOptions();
+    }
+
+    showListSkeleton() {
+        const sk = Array.from({ length: 6 })
+            .map(
+                () => `
+      <div class="item skeleton">
+        <div class="top"><div class="title"></div><div class="amount"> </div></div>
+        <div class="meta"><span></span><span>•</span><span></span></div>
+      </div>`
+            )
+            .join("");
+        this.$list.innerHTML = sk;
+    }
+
+    computeRev(items) {
+        try {
+            const arr = (items || []).slice().sort((a, b) => String(a.id).localeCompare(String(b.id)));
+            return JSON.stringify(arr);
+        } catch {
+            return JSON.stringify(items || []);
+        }
+    }
+
+    // [UPDATED] loadList: sau khi renderList -> renderStats; chỉ update GUI khi thay đổi
+    async loadList(force = false) {
+        const uid = this.user?.id || "anon";
+        const cached = !force ? ListCache.get(uid) : null;
+
+        if (cached) {
+            this.items = this.sortByDateDesc(cached.items || []);
+            this.lastRev = cached.rev || this.computeRev(this.items);
+            this.renderList();
+            this.renderStats(this.computeStats(this.items)); // [ADDED]
+        } else {
+            this.showListSkeleton();
+        }
+
+        LoadBar.start();
+        try {
+            const r = await this.api.call("list");
+            if (!r.ok) {
+                if (!cached) this.$list.innerHTML = `<div class="empty">Không tải được danh sách: ${r.error || ""}</div>`;
+                return;
+            }
+            const fresh = this.sortByDateDesc(r.items || []);
+            const rev = this.computeRev(fresh);
+            if (rev !== this.lastRev) {
+                this.items = fresh;
+                this.lastRev = rev;
+                this.renderList();
+                this.renderStats(this.computeStats(this.items)); // [ADDED]
+            }
+            ListCache.set(uid, fresh, rev);
+        } finally {
+            LoadBar.done();
+        }
+    }
+    renderList() {
+        if (!this.items.length) {
+            this.$list.innerHTML = `<div class="empty">Chưa có giao dịch.</div>`;
+            return;
+        }
+        const rows = this.items.map((it) => {
+            const amt = Number(it.amount) || 0;
+            const isIncome = amt >= 0;
+            const cls = isIncome ? "income" : "expense";
+            const sign = isIncome ? "" : "−";
+            const d = this.toISODate(it.date) || "";
+            return `
+      <div class="item" data-id="${it.id}">
+        <div class="top">
+          <div class="title">${this.escape(it.merchant || "")}</div>
+          <div class="amount ${cls}">${sign}${this.fmtMoney(Math.abs(amt))} ₫</div>
+        </div>
+        <div class="meta">
+          <span>${d}</span><span>•</span><span>${this.escape(it.category || "")}</span>
+          ${it.note ? `<span>•</span><span>${this.escape(it.note)}</span>` : ""}
+        </div>
+      </div>`;
+        });
+        this.$list.innerHTML = rows.join("");
+    }
+
+    openEditor(it) {
+        this.editingId = it?.id || null;
+        const isEdit = !!this.editingId;
+        this.$sheetTitle.textContent = isEdit ? "Sửa giao dịch" : "Thêm giao dịch";
+        const isIncome = it ? Number(it.amount) >= 0 : false;
+        this.$eMerchant.value = it?.merchant || "";
+        this.$eAmount.value = it ? String(Math.abs(Number(it.amount) || 0)) : "";
+        // ---- FIX: đảm bảo input date là YYYY-MM-DD
+        this.$eDate.value = this.toISODate(it?.date) || this.toISODate(new Date());
+        this.$eCategory.value = it?.category || this.categories[0] || "Uncategorized";
+        if (this.$eType) this.$eType.value = isIncome ? "income" : "expense";
+        this.$eNote.value = it?.note || "";
+        this.$eDelete.style.display = isEdit ? "inline-flex" : "none";
+        this.$sheet.classList.add("open");
+        this.$sheet.setAttribute("aria-hidden", "false");
+        // ---- FIX: không dùng Telegram MainButton để tránh 2 nút Lưu
+        try {
+            tg?.MainButton?.offClick?.();
+            tg?.MainButton?.hide?.();
+        } catch {}
+    }
+
+    async saveEditor() {
+        const type = this.$eType?.value || "expense";
+        const amountRaw = this.parseIntVND(this.$eAmount.value);
+        const fields = {
+            merchant: this.$eMerchant.value.trim(),
+            amount: type === "expense" ? -Math.abs(amountRaw) : Math.abs(amountRaw),
+            date: this.$eDate.value || this.toISODate(new Date()),
+            category: this.$eCategory.value || "Uncategorized",
+            note: this.$eNote.value.trim(),
+            type,
+        };
+        if (!fields.merchant || !(Math.abs(fields.amount) > 0)) {
+            this.toast("Nhập diễn giải và số tiền > 0");
+            return;
+        }
+        const r = this.editingId ? await this.api.call("update", { id: this.editingId, fields }) : await this.api.call("append", { ...fields, source: "webapp" });
+        if (!r.ok) {
+            this.toast((this.editingId ? "Không cập nhật được: " : "Không thêm được: ") + (r.error || ""));
+            return;
+        }
+        tg?.HapticFeedback?.notificationOccurred?.("success");
+        await this.loadList(true); // bypass cache để phản ánh thay đổi
+        this.closeSheet();
+        this.toast("Đã lưu.");
+    }
+
+    async deleteItem() {
+        if (!this.editingId) return;
+        const r = await this.api.call("delete", { id: this.editingId });
+        if (!r.ok) {
+            this.toast("Không xoá được: " + (r.error || ""));
+            return;
+        }
+        tg?.HapticFeedback?.notificationOccurred?.("success");
+        await this.loadList(true);
+        this.closeSheet();
+        this.toast("Đã xoá.");
+    }
+
+    closeSheet() {
+        this.$sheet.classList.remove("open");
+        this.$sheet.setAttribute("aria-hidden", "true");
+        try {
+            tg?.MainButton?.offClick?.();
+            tg?.MainButton?.hide?.();
+        } catch {}
+        this.editingId = null;
+    }
+
+    fmtMoney(v) {
+        try {
+            return Number(v).toLocaleString("vi-VN");
+        } catch {
+            return v;
+        }
+    }
+    escape(s) {
+        return String(s).replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+    }
+    parseIntVND(s) {
+        return Number(String(s).replace(/[^\d]/g, "")) || 0;
+    }
+    // [UPDATED] toast(): chuyển sang dùng Toast riêng
+    toast(msg) {
+        Toast.show(msg);
+    }
+    // [ADDED] Tính và render thống kê (chi tiêu âm, lấy trị tuyệt đối)
+    computeStats(items) {
+        const list = Array.isArray(items) ? items : [];
+        const todayISO = this.toISODate(new Date());
+        const ym = todayISO.slice(0, 7); // YYYY-MM
+        const y = todayISO.slice(0, 4); // YYYY
+        let day = 0,
+            month = 0,
+            year = 0;
+        for (const it of list) {
+            const amt = Number(it.amount) || 0;
+            const spend = amt < 0 ? -amt : 0; // chỉ tính chi
+            if (!spend) continue;
+            const dISO = this.toISODate(it.date);
+            if (!dISO) continue;
+            if (dISO === todayISO) day += spend;
+            if (dISO.startsWith(ym)) month += spend;
+            if (dISO.startsWith(y)) year += spend;
+        }
+        return { day, month, year };
+    }
+    renderStats(stats) {
+        if (!stats) stats = { day: 0, month: 0, year: 0 };
+        if (this.$statsDay) this.$statsDay.textContent = `${this.fmtMoney(stats.day)} ₫`;
+        if (this.$statsMonth) this.$statsMonth.textContent = `${this.fmtMoney(stats.month)} ₫`;
+        if (this.$statsYear) this.$statsYear.textContent = `${this.fmtMoney(stats.year)} ₫`;
+    }
+}
+
+const app = new ExpenseApp();
+app.init();

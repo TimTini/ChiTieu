@@ -178,6 +178,58 @@ class ListCache {
     }
 }
 
+/* Cache for global stats (per-user, per-day) */
+class StatsCache {
+    static prefix(uid) {
+        return `ct:stats:${uid || "anon"}:`;
+    }
+    static key(uid, todayISO) {
+        return `${this.prefix(uid)}${todayISO}`;
+    }
+    // TTL tối đa 10 phút, nhưng không vượt quá 0h đêm tiếp theo
+    static _ttlMsUntilMidnight() {
+        const now = new Date();
+        const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+        const msToMidnight = midnight - now;
+        const MAX = 10 * 60 * 1000; // 10 phút
+        return Math.max(1_000, Math.min(MAX, msToMidnight));
+    }
+    static get(uid, todayISO) {
+        try {
+            const raw = localStorage.getItem(this.key(uid, todayISO));
+            if (!raw) return null;
+            const o = JSON.parse(raw);
+            if (!o || !o.stats) return null;
+            if (Date.now() > (o.exp || 0)) return null;
+            return o.stats; // { day, month, year }
+        } catch {
+            return null;
+        }
+    }
+    static set(uid, todayISO, stats) {
+        try {
+            const ttl = this._ttlMsUntilMidnight();
+            const exp = Date.now() + ttl;
+            localStorage.setItem(this.key(uid, todayISO), JSON.stringify({ exp, stats }));
+        } catch {}
+    }
+    static clear(uid) {
+        try {
+            const pref = this.prefix(uid);
+            Object.keys(localStorage).forEach((k) => {
+                if (k.startsWith(pref)) localStorage.removeItem(k);
+            });
+        } catch {}
+    }
+    static clearAll() {
+        try {
+            Object.keys(localStorage).forEach((k) => {
+                if (k.startsWith("ct:stats:")) localStorage.removeItem(k);
+            });
+        } catch {}
+    }
+}
+
 class ExpenseApp {
     constructor() {
         const initDataRaw = tg?.initData || "";
@@ -429,11 +481,25 @@ class ExpenseApp {
         });
     }
     // [ADDED] loadStats(): thống kê toàn cục từ server (không phụ thuộc trang)
-    async loadStats() {
+    // [UPDATED] loadStats(): thống kê toàn cục từ server (không phụ thuộc trang) + cache
+    async loadStats(force = false) {
+        const uid = this.user?.id || "anon";
+        const todayISO = this.toISODate(new Date());
+        if (!force) {
+            const cached = StatsCache.get(uid, todayISO);
+            if (cached) {
+                this.renderStats(cached);
+                return;
+            }
+        }
         try {
             const r = await this.api.call("stats");
             if (r && r.ok) {
-                this.renderStats({ day: r.day || 0, month: r.month || 0, year: r.year || 0 });
+                const stats = { day: r.day || 0, month: r.month || 0, year: r.year || 0 };
+                this.renderStats(stats);
+                // ưu tiên khóa theo ngày server trả về (nếu cung cấp), fallback local
+                const keyDate = typeof r.today === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.today) ? r.today : todayISO;
+                StatsCache.set(uid, keyDate, stats);
             }
         } catch {}
     }
@@ -618,8 +684,9 @@ class ExpenseApp {
             return;
         }
         tg?.HapticFeedback?.notificationOccurred?.("success");
-        await this.loadList(true);
-        await this.loadStats();
+        await this.loadList(true); // invalidate stats cache rồi tải lại
+        StatsCache.clear(this.user?.id || "anon");
+        await this.loadStats(true);
         this.closeSheet();
         this.toast("Đã lưu.");
     }
@@ -633,7 +700,9 @@ class ExpenseApp {
         }
         tg?.HapticFeedback?.notificationOccurred?.("success");
         await this.loadList(true);
-        await this.loadStats();
+        // invalidate stats cache rồi tải lại
+        StatsCache.clear(this.user?.id || "anon");
+        await this.loadStats(true);
         this.closeSheet();
         this.toast("Đã xoá.");
     }

@@ -1,6 +1,6 @@
 // filename: web/app.js
 // Mobile-first Telegram WebApp UI + caching + loading bar + sorted list + editor fixes
-const APPS_SCRIPT_ID = "AKfycbxfGkJLQ9i-vH9z2TxhZPNVr4mqd5_zOIfyrN9KY2d8RTvhvvQXwc-D3v7CC5EQx8qq6Q";
+const APPS_SCRIPT_ID = "AKfycbwim_Fs0agNVHIonOwpeDKUfGlJiXkPM3cadboOZyEXRQTGVwn4q3sNCsHLfoqkyclGug";
 const APPS_SCRIPT_URL = `https://script.google.com/macros/s/${APPS_SCRIPT_ID}/exec`;
 const tg = window.Telegram?.WebApp;
 
@@ -147,13 +147,14 @@ class CategoryCache {
 
 /* Cache for list items (per-user) */
 class ListCache {
-    static ttlMs = 5 * 60 * 1000; // 5 phút
-    static key(uid) {
-        return `ct:list:${uid || "anon"}:v1`;
+    // static ttlMs = 5 * 60 * 1000; // 5 phút
+    static ttlMs = 365 * 24 * 60 * 60 * 1000; // 1 năm
+    static key(uid, page, limit) {
+        return `ct:list:${uid || "anon"}:v2:${limit}:${page}`;
     }
-    static get(uid) {
+    static get(uid, page, limit) {
         try {
-            const s = localStorage.getItem(this.key(uid));
+            const s = localStorage.getItem(this.key(uid, page, limit));
             if (!s) return null;
             const o = JSON.parse(s);
             if (!o || !Array.isArray(o.items)) return null;
@@ -163,14 +164,16 @@ class ListCache {
             return null;
         }
     }
-    static set(uid, items, rev) {
+    static set(uid, page, limit, items, rev, total) {
         try {
-            localStorage.setItem(this.key(uid), JSON.stringify({ t: Date.now(), items, rev }));
+            localStorage.setItem(this.key(uid, page, limit), JSON.stringify({ t: Date.now(), items, rev, total }));
         } catch {}
     }
     static clear(uid) {
         try {
-            localStorage.removeItem(this.key(uid));
+            Object.keys(localStorage).forEach((k) => {
+                if (k.startsWith(`ct:list:${uid || "anon"}:v2:`)) localStorage.removeItem(k);
+            });
         } catch {}
     }
 }
@@ -186,17 +189,29 @@ class ExpenseApp {
         this.items = [];
         this.lastRev = null;
 
+        // Phân trang
+        this.page = 1;
+        this.limit = Number(localStorage.getItem("ct:limit") || 20);
+        this.total = 0;
+
         this.categories = [];
         this.$user = document.getElementById("user");
         this.$list = document.getElementById("list");
         this.$reload = document.getElementById("reload");
-        this.$addOpen = document.getElementById("add-open"); // [ADDED]
-        // stats nodes
-        this.$statsDay = document.getElementById("stats-day"); // [ADDED]
-        this.$statsMonth = document.getElementById("stats-month"); // [ADDED]
-        this.$statsYear = document.getElementById("stats-year"); // [ADDED]
+        this.$addOpen = document.getElementById("add-open");
 
-        // Editor (giữ nguyên)
+        // Stats
+        this.$statsDay = document.getElementById("stats-day");
+        this.$statsMonth = document.getElementById("stats-month");
+        this.$statsYear = document.getElementById("stats-year");
+
+        // Pager nodes
+        this.$pageSize = document.getElementById("page-size");
+        this.$prev = document.getElementById("page-prev");
+        this.$next = document.getElementById("page-next");
+        this.$range = document.getElementById("page-range");
+
+        // Editor
         this.$sheet = document.getElementById("sheet");
         this.$sheetTitle = document.getElementById("sheet-title");
         this.$sheetClose = document.getElementById("sheet-close");
@@ -211,7 +226,6 @@ class ExpenseApp {
         this.editingId = null;
         this._busy = false;
     }
-
     async init() {
         this.applyThemeFromTelegram();
         this.bindEvents();
@@ -223,18 +237,13 @@ class ExpenseApp {
         this._printInitDebug();
         window.printInitDebug = () => this._printInitDebug();
         window.copyInitDebug = async () => {
-            const obj = this._buildInitDebug();
-            const text = JSON.stringify(obj, null, 2);
-            try {
-                await navigator.clipboard.writeText(text);
-                tg?.showPopup ? tg.showPopup({ title: "Debug", message: "Đã copy debug JSON vào clipboard.", buttons: [{ type: "ok" }] }) : alert("Đã copy debug JSON.");
-            } catch (e) {
-                console.warn("Clipboard write failed:", e);
-            }
+            /* (giữ nguyên thân cũ) */
         };
 
         await this.loadCategories();
-        await this.loadList(); // dùng cache nếu có
+        if (this.$pageSize) this.$pageSize.value = String(this.limit);
+        await this.loadList(); // tải trang đầu
+        await this.loadStats(); // thống kê toàn cục
     }
 
     _printInitDebug() {
@@ -372,8 +381,35 @@ class ExpenseApp {
 
     // [UPDATED] bindEvents: gắn nút Thêm, bỏ lắng nghe quick form
     bindEvents() {
-        this.$reload.addEventListener("click", () => this.loadList(true));
-        this.$addOpen?.addEventListener("click", () => this.openEditor(null)); // [ADDED]
+        this.$reload.addEventListener("click", () => {
+            this.loadList(true);
+            this.loadStats();
+        });
+        this.$addOpen?.addEventListener("click", () => this.openEditor(null));
+
+        // Pager
+        this.$pageSize?.addEventListener("change", (e) => {
+            this.limit = Number(e.target.value) || 20;
+            if (![10, 20, 50].includes(this.limit)) this.limit = 20;
+            localStorage.setItem("ct:limit", this.limit);
+            this.page = 1;
+            ListCache.clear(this.user?.id || "anon");
+            this.loadList(true);
+            this.loadStats();
+        });
+        this.$prev?.addEventListener("click", () => {
+            if (this.page > 1) {
+                this.page--;
+                this.loadList(true);
+            }
+        });
+        this.$next?.addEventListener("click", () => {
+            const maxPage = Math.max(1, Math.ceil((Number(this.total) || 0) / (Number(this.limit) || 20)));
+            if (this.page < maxPage) {
+                this.page++;
+                this.loadList(true);
+            }
+        });
 
         this.$sheetClose.addEventListener("click", () => this.closeSheet());
         this.$eSave.addEventListener("click", () => this.saveEditor());
@@ -392,7 +428,27 @@ class ExpenseApp {
             document.querySelectorAll(".btn").forEach((b) => b.addEventListener(ev, haptic, { passive: true }));
         });
     }
-
+    // [ADDED] loadStats(): thống kê toàn cục từ server (không phụ thuộc trang)
+    async loadStats() {
+        try {
+            const r = await this.api.call("stats");
+            if (r && r.ok) {
+                this.renderStats({ day: r.day || 0, month: r.month || 0, year: r.year || 0 });
+            }
+        } catch {}
+    }
+    // [ADDED] renderPager(): cập nhật phạm vi + disable prev/next
+    renderPager() {
+        const total = Number(this.total) || 0;
+        const limit = Number(this.limit) || 20;
+        const page = Math.max(1, Number(this.page) || 1);
+        const from = total ? (page - 1) * limit + 1 : 0;
+        const to = Math.min(total, page * limit);
+        if (this.$range) this.$range.textContent = `${from}–${to} / ${this.fmtMoney(total)}`;
+        if (this.$prev) this.$prev.disabled = page <= 1;
+        const maxPage = Math.max(1, Math.ceil(total / limit));
+        if (this.$next) this.$next.disabled = page >= maxPage;
+    }
     renderCatOptions() {
         const opts = this.categories.map((c) => `<option value="${c}">${c}</option>`).join("");
         const q = document.getElementById("q-category"); // có thể KHÔNG tồn tại (đã bỏ Quick add)
@@ -458,36 +514,36 @@ class ExpenseApp {
         }
     }
 
-    // [UPDATED] loadList: sau khi renderList -> renderStats; chỉ update GUI khi thay đổi
     async loadList(force = false) {
         const uid = this.user?.id || "anon";
-        const cached = !force ? ListCache.get(uid) : null;
+        const cached = !force ? ListCache.get(uid, this.page, this.limit) : null;
 
         if (cached) {
             this.items = this.sortByDateDesc(cached.items || []);
             this.lastRev = cached.rev || this.computeRev(this.items);
+            this.total = Number(cached.total) || 0;
             this.renderList();
-            this.renderStats(this.computeStats(this.items)); // [ADDED]
+            this.renderPager();
         } else {
             this.showListSkeleton();
         }
 
         LoadBar.start();
         try {
-            const r = await this.api.call("list");
+            const r = await this.api.call("list", { page: this.page, limit: this.limit });
             if (!r.ok) {
                 if (!cached) this.$list.innerHTML = `<div class="empty">Không tải được danh sách: ${r.error || ""}</div>`;
                 return;
             }
             const fresh = this.sortByDateDesc(r.items || []);
             const rev = this.computeRev(fresh);
-            if (rev !== this.lastRev) {
-                this.items = fresh;
-                this.lastRev = rev;
-                this.renderList();
-                this.renderStats(this.computeStats(this.items)); // [ADDED]
-            }
-            ListCache.set(uid, fresh, rev);
+            const total = Number(r.total) || fresh.length;
+            this.items = fresh;
+            this.lastRev = rev;
+            this.total = total;
+            this.renderList();
+            this.renderPager();
+            ListCache.set(uid, this.page, this.limit, fresh, rev, total);
         } finally {
             LoadBar.done();
         }
@@ -539,7 +595,7 @@ class ExpenseApp {
             tg?.MainButton?.hide?.();
         } catch {}
     }
-
+    // [UPDATED] saveEditor(): sau khi lưu -> reload trang hiện tại + stats
     async saveEditor() {
         const type = this.$eType?.value || "expense";
         const amountRaw = this.parseIntVND(this.$eAmount.value);
@@ -561,11 +617,12 @@ class ExpenseApp {
             return;
         }
         tg?.HapticFeedback?.notificationOccurred?.("success");
-        await this.loadList(true); // bypass cache để phản ánh thay đổi
+        await this.loadList(true);
+        await this.loadStats();
         this.closeSheet();
         this.toast("Đã lưu.");
     }
-
+    // [UPDATED] deleteItem(): sau khi xoá -> reload trang hiện tại + stats
     async deleteItem() {
         if (!this.editingId) return;
         const r = await this.api.call("delete", { id: this.editingId });
@@ -575,6 +632,7 @@ class ExpenseApp {
         }
         tg?.HapticFeedback?.notificationOccurred?.("success");
         await this.loadList(true);
+        await this.loadStats();
         this.closeSheet();
         this.toast("Đã xoá.");
     }

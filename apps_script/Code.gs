@@ -7,7 +7,24 @@ const LOG_SHEET_NAME = 'log';
 const DEBUG = false;
 
 function _cors(resp) { return resp; }
+// [ADDED] Helper: so sánh date desc + id desc (date dạng yyyy-MM-dd)
+function _cmpByDateIdDesc_(a, b) {
+  const da = String(a.date || '');
+  const db = String(b.date || '');
+  if (db !== da) return db > da ? 1 : -1;
+  const ia = String(a.id || '');
+  const ib = String(b.id || '');
+  return ib.localeCompare(ia);
+}
 
+// [ADDED] Helper: giới hạn limit 10|20|50
+function _parseLimit_(v) {
+  var n = Number(v);
+  if (n === 10 || n === 20 || n === 50) return n;
+  if (n <= 10) return 10;
+  if (n >= 50) return 50;
+  return 20;
+}
 /** [ADDED] NÉN/ GIẢI NÉN raw: gzip + base64, lưu dạng "gz:<b64>" để nhẹ cột raw */
 function _gzipB64Encode_(text) {
   if (!text) return '';
@@ -205,6 +222,7 @@ function _today_() {
 }
 
 /** doPost – [UPDATED] nén raw mặc định khi action=append */
+// [UPDATED] doPost(): list có phân trang + [ADDED] stats toàn cục
 function doPost(e) {
   const out = ContentService.createTextOutput();
   _cors(out).setMimeType(ContentService.MimeType.JSON);
@@ -250,23 +268,53 @@ function doPost(e) {
         category: String(payload.category || 'Uncategorized'),
         note: String(payload.note || ''),
         source: String(payload.source || 'manual'),
-        raw: payload.raw ? _gzipB64Encode_(payload.raw) : ''   // <<< nén mặc định
+        raw: payload.raw ? _gzipB64Encode_(payload.raw) : ''
       };
       _sheetTarget_().appendRow([rec.id, rec.user_id, rec.date, rec.amount, rec.merchant, rec.category, rec.note, rec.source, rec.raw]);
       return out.setContent(JSON.stringify({ ok: true, id: rec.id }));
     }
 
+    // [UPDATED] LIST: phân trang + sắp xếp ổn định
     if (action === 'list') {
+      const page = Math.max(1, Number(payload.page || 1));
+      const limit = _parseLimit_(payload.limit);
       const data = _sheet().getDataRange().getValues();
       const idx = (typeof _headersIndex === 'function' ? _headersIndex : _headersIndexSafe)(data[0]);
-      const items = data.slice(1)
+      const all = data.slice(1)
         .filter(r => String(r[idx.user_id]) === userId)
         .map(r => ({
-          id: r[idx.id], date: r[idx.date], amount: r[idx.amount], merchant: r[idx.merchant],
-          category: r[idx.category], note: r[idx.note], source: r[idx.source]
-          // raw cố ý KHÔNG trả, để nhẹ
+          id: r[idx.id], date: r[idx.date], amount: r[idx.amount],
+          merchant: r[idx.merchant], category: r[idx.category],
+          note: r[idx.note], source: r[idx.source]
         }));
-      return out.setContent(JSON.stringify({ ok: true, items }));
+      all.sort(_cmpByDateIdDesc_);
+      const total = all.length;
+      const offset = (page - 1) * limit;
+      const items = all.slice(offset, offset + limit);
+      const hasMore = offset + limit < total;
+      return out.setContent(JSON.stringify({ ok: true, items, total, page, limit, hasMore }));
+    }
+
+    // [ADDED] STATS: tổng chi hôm nay / tháng / năm (không phụ thuộc trang)
+    if (action === 'stats') {
+      const tz = Session.getScriptTimeZone() || 'Asia/Ho_Chi_Minh';
+      const today = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
+      const ym = today.slice(0, 7);
+      const y = today.slice(0, 4);
+      const data = _sheet().getDataRange().getValues();
+      const idx = (typeof _headersIndex === 'function' ? _headersIndex : _headersIndexSafe)(data[0]);
+      var day = 0, month = 0, year = 0;
+      for (var i = 1; i < data.length; i++) {
+        if (String(data[i][idx.user_id]) !== userId) continue;
+        var amt = Number(data[i][idx.amount]) || 0;
+        if (amt >= 0) continue; // chỉ tính chi
+        var d = String(data[i][idx.date] || '');
+        var v = -amt;
+        if (d === today) day += v;
+        if (d.substring(0, 7) === ym) month += v;
+        if (d.substring(0, 4) === y) year += v;
+      }
+      return out.setContent(JSON.stringify({ ok: true, day, month, year, today, ym, y }));
     }
 
     if (action === 'update') {

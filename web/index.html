@@ -467,6 +467,23 @@
         </div>
       </div>
     </div>
+    <div id="pager" class="card"
+      style="margin-top:12px;padding:8px 12px;display:flex;align-items:center;gap:8px;justify-content:space-between">
+      <div style="display:flex;align-items:center;gap:8px">
+        <label for="page-size" class="badge" style="border:none;padding:0;color:var(--muted)">Hiển thị</label>
+        <select id="page-size">
+          <option value="10">10</option>
+          <option value="20" selected>20</option>
+          <option value="50">50</option>
+        </select>
+        <span class="badge">/ trang</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <button id="page-prev" class="btn">Trước</button>
+        <button id="page-next" class="btn">Sau</button>
+        <span id="page-range" class="badge">0–0 / 0</span>
+      </div>
+    </div>
     <div id="list" class="card"></div>
     <p class="badge" style="display:block;margin-top:10px">Mẹo: Chạm mục để sửa.</p>
     <div class="mainpad"></div>

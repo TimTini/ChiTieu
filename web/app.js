@@ -695,7 +695,7 @@ class ExpenseApp {
         tg?.HapticFeedback?.notificationOccurred?.("success");
         await this.loadList(true);
         // invalidate stats cache rồi tải lại
-        StatsCache.clear(this.user?.id || "anon");
+        // StatsCache.clear(this.user?.id || "anon");
         await this.loadStats(true);
         this.closeSheet();
         this.toast("Đã lưu.");
@@ -711,7 +711,7 @@ class ExpenseApp {
         tg?.HapticFeedback?.notificationOccurred?.("success");
         await this.loadList(true);
         // invalidate stats cache rồi tải lại
-        StatsCache.clear(this.user?.id || "anon");
+        // StatsCache.clear(this.user?.id || "anon");
         await this.loadStats(true);
         this.closeSheet();
         this.toast("Đã xoá.");

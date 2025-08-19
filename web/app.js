@@ -297,7 +297,11 @@ class ExpenseApp {
         await this.loadList(); // tải trang đầu
         await this.loadStats(); // thống kê toàn cục
     }
-
+    todayISOInTZ(tz = "Asia/Ho_Chi_Minh") {
+        const d = new Date();
+        const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
+        return fmt.format(d); // yyyy-mm-dd
+    }
     _printInitDebug() {
         const dbg = this._buildInitDebug();
         console.groupCollapsed("[INITDATA] Tổng quan");
@@ -484,7 +488,8 @@ class ExpenseApp {
     // [UPDATED] loadStats(): thống kê toàn cục từ server (không phụ thuộc trang) + cache
     async loadStats(force = false) {
         const uid = this.user?.id || "anon";
-        const todayISO = this.toISODate(new Date());
+        const todayISO = this.todayISOInTZ("Asia/Ho_Chi_Minh");
+
         if (!force) {
             const cached = StatsCache.get(uid, todayISO);
             if (cached) {
@@ -494,15 +499,19 @@ class ExpenseApp {
         }
         try {
             const r = await this.api.call("stats");
-            if (r && r.ok) {
+            if (r?.ok) {
                 const stats = { day: r.day || 0, month: r.month || 0, year: r.year || 0 };
                 this.renderStats(stats);
-                // ưu tiên khóa theo ngày server trả về (nếu cung cấp), fallback local
                 const keyDate = typeof r.today === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.today) ? r.today : todayISO;
                 StatsCache.set(uid, keyDate, stats);
+                return;
             }
         } catch {}
+        // Fallback nếu API lỗi
+        const est = this.computeStats(this.items);
+        this.renderStats(est);
     }
+
     // [ADDED] renderPager(): cập nhật phạm vi + disable prev/next
     renderPager() {
         const total = Number(this.total) || 0;

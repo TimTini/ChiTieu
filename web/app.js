@@ -435,7 +435,7 @@ class ExpenseApp {
     bindEvents() {
         this.$reload.addEventListener("click", () => {
             this.loadList(true);
-            this.loadStats();
+            this.loadStats(true);
         });
         this.$addOpen?.addEventListener("click", () => this.openEditor(null));
 
@@ -447,7 +447,7 @@ class ExpenseApp {
             this.page = 1;
             ListCache.clear(this.user?.id || "anon");
             this.loadList(true);
-            this.loadStats();
+            this.loadStats(true);
         });
         this.$prev?.addEventListener("click", () => {
             if (this.page > 1) {
@@ -684,7 +684,8 @@ class ExpenseApp {
             return;
         }
         tg?.HapticFeedback?.notificationOccurred?.("success");
-        await this.loadList(true); // invalidate stats cache rồi tải lại
+        await this.loadList(true);
+        // invalidate stats cache rồi tải lại
         StatsCache.clear(this.user?.id || "anon");
         await this.loadStats(true);
         this.closeSheet();

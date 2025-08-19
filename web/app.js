@@ -559,15 +559,16 @@ class ExpenseApp {
             const cls = isIncome ? "income" : "expense";
             const sign = isIncome ? "" : "−";
             const d = this.toISODate(it.date) || "";
+            const noteHtml = it.note ? `<span>•</span><span class="note">${this.escape(it.note)}</span>` : "";
             return `
       <div class="item" data-id="${it.id}">
         <div class="top">
           <div class="title">${this.escape(it.merchant || "")}</div>
-          <div class="amount ${cls}">${sign}${this.fmtMoney(Math.abs(amt))} ₫</div>
+          <div class="amount ${cls}">${sign}${this.fmtMoney(Math.abs(amt))}&nbsp;₫</div>
         </div>
         <div class="meta">
           <span>${d}</span><span>•</span><span>${this.escape(it.category || "")}</span>
-          ${it.note ? `<span>•</span><span>${this.escape(it.note)}</span>` : ""}
+          ${noteHtml}
         </div>
       </div>`;
         });

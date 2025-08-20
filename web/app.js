@@ -254,6 +254,21 @@ class StickyCalcs {
         setTimeout(StickyCalcs._set, 0);
     }
 }
+// [ADDED] Toggle .header-hidden trên <html> khi header rời viewport
+class HeaderState {
+    static init() {
+        const head = document.querySelector("header");
+        if (!head || !("IntersectionObserver" in window)) return;
+        const io = new IntersectionObserver(
+            ([e]) => {
+                const visible = !!e && e.intersectionRatio > 0;
+                document.documentElement.classList.toggle("header-hidden", !visible);
+            },
+            { threshold: 0.01 }
+        );
+        io.observe(head);
+    }
+}
 class ExpenseApp {
     constructor() {
         const initDataRaw = tg?.initData || "";
@@ -304,6 +319,7 @@ class ExpenseApp {
     }
     async init() {
         StickyCalcs.init(); // [ADDED]
+        HeaderState.init(); // [ADDED]
         this.applyThemeFromTelegram();
         this.bindEvents();
         if (tg?.ready) tg.ready();

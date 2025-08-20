@@ -229,7 +229,31 @@ class StatsCache {
         } catch {}
     }
 }
-
+// [ADDED] Đồng bộ chiều cao header vào CSS var --header-h (tránh pager "lơ lửng" khi header co/ẩn)
+class StickyCalcs {
+    static _set = () => {
+        const h = document.querySelector("header");
+        // lấy chiều cao thực tế (kể cả safe-area / co giãn)
+        const px = Math.round(h?.getBoundingClientRect().height || 0);
+        if (px > 0) document.documentElement.style.setProperty("--header-h", px + "px");
+    };
+    static init() {
+        StickyCalcs._set();
+        const head = document.querySelector("header");
+        if (head && "ResizeObserver" in window) {
+            this._ro = new ResizeObserver(StickyCalcs._set);
+            this._ro.observe(head);
+        }
+        window.addEventListener("resize", StickyCalcs._set, { passive: true });
+        window.addEventListener("orientationchange", StickyCalcs._set);
+        // Telegram WebApp viewport thay đổi khi thanh app thu/phóng
+        try {
+            tg?.onEvent?.("viewportChanged", StickyCalcs._set);
+        } catch {}
+        // dự phòng: tick sau layout
+        setTimeout(StickyCalcs._set, 0);
+    }
+}
 class ExpenseApp {
     constructor() {
         const initDataRaw = tg?.initData || "";
@@ -279,6 +303,7 @@ class ExpenseApp {
         this._busy = false;
     }
     async init() {
+        StickyCalcs.init(); // [ADDED]
         this.applyThemeFromTelegram();
         this.bindEvents();
         if (tg?.ready) tg.ready();
@@ -486,12 +511,14 @@ class ExpenseApp {
     }
     // [ADDED] loadStats(): thống kê toàn cục từ server (không phụ thuộc trang)
     // [UPDATED] loadStats(): thống kê toàn cục từ server (không phụ thuộc trang) + cache
+    // [UPDATED] loadStats(): luôn dùng todayISO (Asia/Ho_Chi_Minh) làm key khi set/get
     async loadStats(force = false) {
-        const uid = this.user?.id || "anon";
+        const uid = String(this.user?.id || "anon");
         const todayISO = this.todayISOInTZ("Asia/Ho_Chi_Minh");
 
         if (!force) {
             const cached = StatsCache.get(uid, todayISO);
+            console.debug("[STATS] cache", { key: StatsCache.key(uid, todayISO), hit: !!cached }); // kiểm tra nhanh
             if (cached) {
                 this.renderStats(cached);
                 return;
@@ -502,11 +529,18 @@ class ExpenseApp {
             if (r?.ok) {
                 const stats = { day: r.day || 0, month: r.month || 0, year: r.year || 0 };
                 this.renderStats(stats);
-                const keyDate = typeof r.today === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.today) ? r.today : todayISO;
-                StatsCache.set(uid, keyDate, stats);
+                // Ghi cache theo múi giờ local để lần sau get() khớp key
+                StatsCache.set(uid, todayISO, stats);
+
+                // Phòng trường hợp API trả r.today khác todayISO (UTC lệch múi) – ghi thêm 1 bản tương thích ngược.
+                if (typeof r.today === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.today) && r.today !== todayISO) {
+                    StatsCache.set(uid, r.today, stats);
+                }
                 return;
             }
-        } catch {}
+        } catch (e) {
+            console.debug("[STATS] api error", e);
+        }
         // Fallback nếu API lỗi
         const est = this.computeStats(this.items);
         this.renderStats(est);

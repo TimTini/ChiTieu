@@ -1,6 +1,6 @@
 // filename: web/app.js
 // Mobile-first Telegram WebApp UI + caching + loading bar + sorted list + editor fixes
-const APPS_SCRIPT_ID = "AKfycbw1-DcCA49HLzbFgAcZGr8ugGeVBKbwCcewYFsIL8cSvnt22lLKaMNZTJN6xhqxa5edsA";
+const APPS_SCRIPT_ID = "AKfycbwQLuS7mG9seaZdQyzDgM10FA11ZmMViQEyqXY6JExIEse4JS0LWgCHvdq8lAExnVh4rQ";
 const APPS_SCRIPT_URL = `https://script.google.com/macros/s/${APPS_SCRIPT_ID}/exec`;
 const tg = window.Telegram?.WebApp;
 
@@ -343,6 +343,65 @@ class ExpenseApp {
 
         await Promise.all([pCats, pList, pStats]);
     }
+    _getUid() {
+        return String(this.user?.id || "anon");
+    }
+    _persistPageCache() {
+        const uid = this._getUid();
+        const rev = this.computeRev(this.items);
+        ListCache.set(uid, this.page, this.limit, this.items, rev, this.total);
+        this.lastRev = rev;
+    }
+
+    _upsertItemLocal(item, isNew) {
+        // Nếu đang không ở trang 1 và là item mới, chỉ tăng total rồi update pager
+        if (isNew && this.page !== 1) {
+            this.total = Math.max(0, Number(this.total || 0) + 1);
+            this.renderPager();
+            this._persistPageCache();
+            return;
+        }
+
+        // Có thể item đã nằm trong slice hiện tại
+        const idx = this.items.findIndex((x) => x.id === item.id);
+
+        if (idx >= 0) {
+            // Sửa: thay dữ liệu và resort slice
+            this.items[idx] = { ...this.items[idx], ...item };
+            this.items = this.sortByDateTimeDesc(this.items);
+        } else if (this.page === 1) {
+            // Thêm mới ở trang 1: chèn theo sort & cắt độ dài theo limit
+            const merged = this.items.concat([item]);
+            this.items = this.sortByDateTimeDesc(merged).slice(0, this.limit);
+            // Tổng tăng 1 (ngay cả khi bị cắt bớt cuối danh sách hiển thị)
+            this.total = Math.max(0, Number(this.total || 0) + 1);
+        } else {
+            // Không nằm trong trang hiện tại
+            if (isNew) this.total = Math.max(0, Number(this.total || 0) + 1);
+        }
+
+        this.renderList();
+        this.renderPager();
+        this._persistPageCache();
+    }
+
+    _removeItemLocal(id) {
+        const before = this.items.length;
+        this.items = this.items.filter((x) => x.id !== id);
+        const removedInSlice = this.items.length < before;
+
+        // Giảm tổng bản ghi toàn cục
+        this.total = Math.max(0, Number(this.total || 0) - 1);
+
+        // (tuỳ chọn) Nếu muốn luôn đủ số lượng ở trang hiện tại thì phải “kéo” 1 item kế tiếp từ trang sau.
+        // Ở đây ta giữ đơn giản: chỉ render lại slice hiện tại (có thể ngắn hơn limit một chút).
+        if (removedInSlice) {
+            this.renderList();
+        }
+        this.renderPager();
+        this._persistPageCache();
+    }
+
     todayISOInTZ(tz = "Asia/Ho_Chi_Minh") {
         const d = new Date();
         const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
@@ -430,7 +489,6 @@ class ExpenseApp {
         if (!s) return { head: "", tail: "" };
         return { head: s.slice(0, n), tail: s.slice(-n) };
     }
-
     /* ==== Date helpers: normalize to input[type=date] YYYY-MM-DD ==== */
     toISODate(val) {
         if (!val && val !== 0) return "";
@@ -461,12 +519,17 @@ class ExpenseApp {
         const t = Date.parse(`${iso}T00:00:00`);
         return isNaN(t) ? 0 : t;
     }
-    sortByDateDesc(items) {
+    dateTimeKey(it) {
+        // 'YYYY-MM-DDTHH:mm:ss' để so sánh chuỗi giảm dần cho ổn định
+        const d = this.toISODate(it?.date) || "0000-00-00";
+        const t = it?.time && /^\d{2}:\d{2}(:\d{2})?$/.test(it.time) ? (it.time.length === 5 ? it.time + ":00" : it.time) : "00:00:00";
+        return `${d}T${t}`;
+    }
+    sortByDateTimeDesc(items) {
         return (items || []).slice().sort((a, b) => {
-            const da = this.dateKey(a?.date),
-                db = this.dateKey(b?.date);
-            if (db !== da) return db - da; // mới → cũ
-            // tie-breaker: stable by id desc
+            const ka = this.dateTimeKey(a);
+            const kb = this.dateTimeKey(b);
+            if (kb !== ka) return kb > ka ? 1 : -1; // mới → cũ
             return String(b?.id || "").localeCompare(String(a?.id || ""));
         });
     }
@@ -655,7 +718,7 @@ class ExpenseApp {
         const cached = !force ? ListCache.get(uid, this.page, this.limit) : null;
 
         if (cached) {
-            this.items = this.sortByDateDesc(cached.items || []);
+            this.items = this.sortByDateTimeDesc(cached.items || []);
             this.lastRev = cached.rev || this.computeRev(this.items);
             this.total = Number(cached.total) || 0;
             this.renderList();
@@ -671,7 +734,7 @@ class ExpenseApp {
                 if (!cached) this.$list.innerHTML = `<div class="empty">Không tải được danh sách: ${r.error || ""}</div>`;
                 return;
             }
-            const fresh = this.sortByDateDesc(r.items || []);
+            const fresh = this.sortByDateTimeDesc(r.items || []);
             const rev = this.computeRev(fresh);
             const total = Number(r.total) || fresh.length;
             this.items = fresh;
@@ -695,6 +758,7 @@ class ExpenseApp {
             const cls = isIncome ? "income" : "expense";
             const sign = isIncome ? "" : "−";
             const d = this.toISODate(it.date) || "";
+            const t = it.time ? ` ${it.time.slice(0, 5)}` : ""; // HH:mm
             const noteHtml = it.note ? `<span>•</span><span class="note">${this.escape(it.note)}</span>` : "";
             return `
       <div class="item" data-id="${it.id}">
@@ -703,7 +767,7 @@ class ExpenseApp {
           <div class="amount ${cls}">${sign}${this.fmtMoney(Math.abs(amt))}&nbsp;₫</div>
         </div>
         <div class="meta">
-          <span>${d}</span><span>•</span><span>${this.escape(it.category || "")}</span>
+          <span>${d}${t}</span><span>•</span><span>${this.escape(it.category || "")}</span>
           ${noteHtml}
         </div>
       </div>`;
@@ -748,32 +812,55 @@ class ExpenseApp {
             this.toast("Nhập diễn giải và số tiền > 0");
             return;
         }
-        const r = this.editingId ? await this.api.call("update", { id: this.editingId, fields }) : await this.api.call("append", { ...fields, source: "webapp" });
+
+        const isUpdate = !!this.editingId;
+        const prevItem = isUpdate ? this.items.find((x) => x.id === this.editingId) : null;
+
+        const r = isUpdate ? await this.api.call("update", { id: this.editingId, fields }) : await this.api.call("append", { ...fields, source: "webapp" });
+
         if (!r.ok) {
-            this.toast((this.editingId ? "Không cập nhật được: " : "Không thêm được: ") + (r.error || ""));
+            this.toast((isUpdate ? "Không cập nhật được: " : "Không thêm được: ") + (r.error || ""));
             return;
         }
+
         tg?.HapticFeedback?.notificationOccurred?.("success");
-        await this.loadList(true);
-        // invalidate stats cache rồi tải lại
-        // StatsCache.clear(this.user?.id || "anon");
-        await this.loadStats(true);
+
+        // cập nhật list cục bộ (đã làm ở lần trước)
+        if (r.item && r.item.id) {
+            this._upsertItemLocal(r.item, !isUpdate);
+            // cập nhật Stats cục bộ theo delta
+            this._applyStatsChange(prevItem, r.item);
+        } else if (!isUpdate && r.id) {
+            const newItem = { id: r.id, ...fields };
+            this._upsertItemLocal(newItem, true);
+            this._applyStatsChange(null, newItem);
+        }
+
+        // KHÔNG gọi await this.loadStats(true);
         this.closeSheet();
         this.toast("Đã lưu.");
     }
+
     // [UPDATED] deleteItem(): sau khi xoá -> reload trang hiện tại + stats
     async deleteItem() {
         if (!this.editingId) return;
+
+        const prevItem = this.items.find((x) => x.id === this.editingId) || null;
+
         const r = await this.api.call("delete", { id: this.editingId });
         if (!r.ok) {
             this.toast("Không xoá được: " + (r.error || ""));
             return;
         }
         tg?.HapticFeedback?.notificationOccurred?.("success");
-        await this.loadList(true);
-        // invalidate stats cache rồi tải lại
-        // StatsCache.clear(this.user?.id || "anon");
-        await this.loadStats(true);
+
+        // cập nhật list cục bộ
+        this._removeItemLocal(this.editingId);
+
+        // trừ Stats cục bộ theo item vừa xoá
+        if (prevItem) this._applyStatsChange(prevItem, null);
+
+        // KHÔNG gọi await this.loadStats(true);
         this.closeSheet();
         this.toast("Đã xoá.");
     }
@@ -826,11 +913,54 @@ class ExpenseApp {
         }
         return { day, month, year };
     }
+    _isExpenseAmount(a) {
+        return Number(a) < 0;
+    }
+    _contribForItem(item) {
+        // chỉ tính CHI (amount < 0), trị tuyệt đối
+        const amt = Number(item?.amount) || 0;
+        const spend = amt < 0 ? -amt : 0;
+        if (!spend) return { day: 0, month: 0, year: 0 };
+
+        const dISO = this.toISODate(item?.date) || "";
+        if (!dISO) return { day: 0, month: 0, year: 0 };
+
+        const today = this.todayISOInTZ("Asia/Ho_Chi_Minh");
+        const ym = today.slice(0, 7);
+        const y = today.slice(0, 4);
+
+        return {
+            day: dISO === today ? spend : 0,
+            month: dISO.startsWith(ym) ? spend : 0,
+            year: dISO.startsWith(y) ? spend : 0,
+        };
+    }
+    _applyStatsDelta(sign, item) {
+        // sign = +1 để cộng, -1 để trừ (khi xoá hoặc rollback bản cũ trong update)
+        const c = this._contribForItem(item);
+        const next = {
+            day: Math.max(0, (this.stats?.day || 0) + sign * c.day),
+            month: Math.max(0, (this.stats?.month || 0) + sign * c.month),
+            year: Math.max(0, (this.stats?.year || 0) + sign * c.year),
+        };
+        this.renderStats(next); // tự ghi cache luôn trong renderStats
+    }
+    // Dùng cho thêm/sửa/xoá:
+    _applyStatsChange(prevItem, nextItem) {
+        if (prevItem) this._applyStatsDelta(-1, prevItem); // trừ đóng góp bản cũ
+        if (nextItem) this._applyStatsDelta(+1, nextItem); // cộng đóng góp bản mới
+    }
+
     renderStats(stats) {
         if (!stats) stats = { day: 0, month: 0, year: 0 };
-        if (this.$statsDay) this.$statsDay.textContent = `${this.fmtMoney(stats.day)} ₫`;
-        if (this.$statsMonth) this.$statsMonth.textContent = `${this.fmtMoney(stats.month)} ₫`;
-        if (this.$statsYear) this.$statsYear.textContent = `${this.fmtMoney(stats.year)} ₫`;
+        this.stats = { day: Number(stats.day) || 0, month: Number(stats.month) || 0, year: Number(stats.year) || 0 };
+        if (this.$statsDay) this.$statsDay.textContent = `${this.fmtMoney(this.stats.day)} ₫`;
+        if (this.$statsMonth) this.$statsMonth.textContent = `${this.fmtMoney(this.stats.month)} ₫`;
+        if (this.$statsYear) this.$statsYear.textContent = `${this.fmtMoney(this.stats.year)} ₫`;
+        // ghi cache để lần sau vào app có baseline
+        const uid = String(this.user?.id || "anon");
+        const todayISO = this.todayISOInTZ("Asia/Ho_Chi_Minh");
+        StatsCache.set(uid, todayISO, this.stats);
     }
 }
 

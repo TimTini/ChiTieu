@@ -1,6 +1,6 @@
 // filename: web/app.js
 // Mobile-first Telegram WebApp UI + caching + loading bar + sorted list + editor fixes
-const APPS_SCRIPT_ID = "AKfycbwaOroqhEI_efQOKJ74FecdmOeL4Me1LgdMDG7NhT-F_wOKXzAQAx6JooBCYsKkjGrLtw";
+const APPS_SCRIPT_ID = "AKfycbxg8PETg0MIPatzl3WauZVaH6K7be45XbJtlA9MMiD6XhC6gVAhOxFMh9RFMUSpRYOvcA";
 const APPS_SCRIPT_URL = `https://script.google.com/macros/s/${APPS_SCRIPT_ID}/exec`;
 const tg = window.Telegram?.WebApp;
 
@@ -191,7 +191,8 @@ class StatsCache {
         const now = new Date();
         const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
         const msToMidnight = midnight - now;
-        const MAX = 10 * 60 * 1000; // 10 phút
+        // const MAX = 10 * 60 * 1000; // 10 phút
+        const MAX = 365 * 24 * 60 * 60 * 1000; // 1 năm
         return Math.max(1_000, Math.min(MAX, msToMidnight));
     }
     static get(uid, todayISO) {
@@ -318,7 +319,7 @@ class ExpenseApp {
         this._busy = false;
     }
     async init() {
-        StickyCalcs.init(); // [ADDED]
+        // StickyCalcs.init(); // [ADDED]
         HeaderState.init(); // [ADDED]
         this.applyThemeFromTelegram();
         this.bindEvents();

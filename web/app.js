@@ -317,10 +317,14 @@ class ExpenseApp {
             /* (giữ nguyên thân cũ) */
         };
 
-        await this.loadCategories();
         if (this.$pageSize) this.$pageSize.value = String(this.limit);
-        await this.loadList(); // tải trang đầu
-        await this.loadStats(); // thống kê toàn cục
+
+        // Chạy song song: categories, list, stats
+        const pCats = this.loadCategories();
+        const pList = this.loadList();
+        const pStats = this.loadStats(false, pList); // chỉ chờ list nếu cần fallback
+
+        await Promise.all([pCats, pList, pStats]);
     }
     todayISOInTZ(tz = "Asia/Ho_Chi_Minh") {
         const d = new Date();
@@ -512,28 +516,28 @@ class ExpenseApp {
     // [ADDED] loadStats(): thống kê toàn cục từ server (không phụ thuộc trang)
     // [UPDATED] loadStats(): thống kê toàn cục từ server (không phụ thuộc trang) + cache
     // [UPDATED] loadStats(): luôn dùng todayISO (Asia/Ho_Chi_Minh) làm key khi set/get
-    async loadStats(force = false) {
+    // loadStats(force = false, itemsReady = Promise|undefined)
+    async loadStats(force = false, itemsReady = null) {
         const uid = String(this.user?.id || "anon");
         const todayISO = this.todayISOInTZ("Asia/Ho_Chi_Minh");
 
         if (!force) {
             const cached = StatsCache.get(uid, todayISO);
-            console.debug("[STATS] cache", { key: StatsCache.key(uid, todayISO), hit: !!cached }); // kiểm tra nhanh
+            console.debug("[STATS] cache", { key: StatsCache.key(uid, todayISO), hit: !!cached });
             if (cached) {
                 this.renderStats(cached);
                 return;
             }
         }
+
         try {
             const r = await this.api.call("stats");
             if (r?.ok) {
                 const stats = { day: r.day || 0, month: r.month || 0, year: r.year || 0 };
                 this.renderStats(stats);
-                // Ghi cache theo múi giờ local để lần sau get() khớp key
                 StatsCache.set(uid, todayISO, stats);
-
-                // Phòng trường hợp API trả r.today khác todayISO (UTC lệch múi) – ghi thêm 1 bản tương thích ngược.
                 if (typeof r.today === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.today) && r.today !== todayISO) {
+                    // tương thích ngược khi backend dùng ngày khác múi giờ
                     StatsCache.set(uid, r.today, stats);
                 }
                 return;
@@ -541,7 +545,13 @@ class ExpenseApp {
         } catch (e) {
             console.debug("[STATS] api error", e);
         }
-        // Fallback nếu API lỗi
+
+        // Fallback: nếu API lỗi và list chưa sẵn, đợi list xong rồi mới tính ước lượng
+        if ((!this.items || this.items.length === 0) && itemsReady?.then) {
+            try {
+                await itemsReady;
+            } catch {}
+        }
         const est = this.computeStats(this.items);
         this.renderStats(est);
     }

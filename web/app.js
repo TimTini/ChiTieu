@@ -605,12 +605,14 @@ class ExpenseApp {
             const cached = StatsCache.get(uid, todayISO);
             console.debug("[STATS] cache", { key: StatsCache.key(uid, todayISO), hit: !!cached });
             if (cached) {
+                // Hiển thị trước data trong cache và tiếp tục request stats mới nhất
                 this.renderStats(cached);
-                return;
+                // return;
             }
         }
 
         try {
+            // request data mới nhất
             const r = await this.api.call("stats");
             if (r?.ok) {
                 const stats = { day: r.day || 0, month: r.month || 0, year: r.year || 0 };

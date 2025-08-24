@@ -5,7 +5,7 @@
 
 const BOT_TOKEN = PropertiesService.getScriptProperties().getProperty("BOT_TOKEN") || "";
 const PUBLIC_WEB = PropertiesService.getScriptProperties().getProperty("PUBLIC_WEB") || "https://example.com/expense";
-const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycby6lC2PHBq-nU02zk3x7TgDL8fpkGDy_Ci8lETfLAwIJIXfncV2aBktjJZXGS-u20Bsog/exec"
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyAQ_FzZZNnQlb6UmdCmzgEmHtY-o9xOUDHZzX5alI5aqSws2e_WQ-JFvyHG2SUuqgxUA/exec"
 const APPS_SCRIPT_API_KEY = PropertiesService.getScriptProperties().getProperty("APPS_SCRIPT_API_KEY") || "";
 const MINIAPP_SHORT_NAME = PropertiesService.getScriptProperties().getProperty("MINIAPP_SHORT_NAME") || "expense";
 
@@ -70,11 +70,9 @@ function parseExpenseText(raw) {
   return { amount, merchant, date, category: 'Uncategorized', note: '' };
 }
 /** ===== Telegram thin client ===== */
+// [UPDATED] Cho phép truyền options khi setWebhook
 class TelegramBot {
-  constructor(token) {
-    this.token = token;
-    this.base = `https://api.telegram.org/bot${token}`;
-  }
+  constructor(token) { this.token = token; this.base = `https://api.telegram.org/bot${token}`; }
   api(method, payload) {
     const res = UrlFetchApp.fetch(`${this.base}/${method}`, {
       method: "post",
@@ -96,7 +94,8 @@ class TelegramBot {
     return this.api("setMyCommands", body);
   }
   setChatMenuButton(menu_button) { return this.api("setChatMenuButton", { menu_button }); }
-  setWebhook(url) { return this.api("setWebhook", { url }); }
+  // [UPDATED]
+  setWebhook(url, options) { return this.api("setWebhook", Object.assign({ url }, options || {})); }
 }
 
 /** ===== Downstream Apps Script client (fallback HTTP) ===== */
@@ -130,6 +129,8 @@ class AppsScriptClient {
 }
 
 /** ===== Expense bot (handlers) ===== */
+// [UPDATED] handleUpdate(): bỏ qua message do chính bot gửi (chặn vòng lặp)
+
 class ExpenseBot {
   constructor(token, webUrl) {
     this.publicWeb = webUrl;
@@ -154,17 +155,16 @@ class ExpenseBot {
 
     this.tg.setChatMenuButton({ type: "web_app", text: "Sổ chi tiêu", web_app: { url: this.publicWeb } });
   }
-
   handleUpdate(update) {
-    const msg = update.message || update.edited_message;
+    const msg = update.message || update.edited_message || update.channel_post || null;
     if (!msg) return;
-    const text = (msg.text || "").trim();
+    if (msg.from && msg.from.is_bot) return;        // [ADDED] ignore self/other bots
 
+    const text = (msg.text || "").trim();
     if (text.startsWith("/start")) return this.start(msg);
     if (text.startsWith("/app")) return this.openApp(msg);
     return this.onText(msg);
   }
-
   start(msg) {
     const chatType = msg.chat.type;
     if (chatType === "group" || chatType === "supergroup") {
@@ -184,11 +184,11 @@ class ExpenseBot {
   openApp(msg) { return this.start(msg); }
 
   // [UPDATED] Ưu tiên gọi fn parser & appendExpense trong cùng project
+  // [UPDATED] onText(): khôi phục fallback + guard null trước khi ghi
   onText(msg) {
     const text = msg.text || "";
     const priv = msg.chat.type === "private";
 
-    // 1) Gọi parser đã có nếu tồn tại
     let parsed = null;
     try {
       if (typeof ExpenseParser !== "undefined" && ExpenseParser && typeof ExpenseParser.parse === "function") {
@@ -198,13 +198,17 @@ class ExpenseBot {
       }
     } catch (_e) { parsed = null; }
 
-    // 2) Fallback đơn giản nếu chưa có parser
-    ExpenseBot._fallbackParse = function (text) {
-      const parsed = parseExpenseText(text);
-      return parsed || null;
-    };
+    // [ADDED] gọi fallback đúng cách
+    if (!parsed) parsed = ExpenseBot._fallbackParse(text);
+    if (!parsed) {
+      return this.tg.sendMessage({
+        chat_id: msg.chat.id,
+        text: "Không nhận diện được số tiền. Bạn có thể nhập tay trong ứng dụng.",
+        reply_markup: JSON.stringify(this.webappBtn(priv)),
+      });
+    }
 
-    // 3) Ghi trực tiếp bằng appendExpense nếu có; nếu không -> fallback HTTP
+    // ghi dữ liệu (giữ nguyên)
     let ok = false, err = "";
     try {
       const rec = {
@@ -218,17 +222,14 @@ class ExpenseBot {
         raw: text,
       };
       if (typeof appendExpense === "function") {
-        const id = appendExpense(rec); // Code.gs sẽ tự nén raw & thêm time/deleted
+        const id = appendExpense(rec);
         ok = !!id;
       } else {
         const result = this.appsScript.appendTransaction(msg.from.id, { ...parsed, raw: text });
         ok = !!(result && result.ok);
         if (!ok) err = (result && result.error) || "unknown";
       }
-    } catch (e) {
-      err = String(e);
-      ok = false;
-    }
+    } catch (e) { err = String(e); ok = false; }
 
     if (ok) {
       const sign = parsed.amount < 0 ? "-" : "+";
@@ -239,10 +240,7 @@ class ExpenseBot {
         reply_markup: JSON.stringify(this.webappBtn(priv)),
       });
     }
-    return this.tg.sendMessage({
-      chat_id: msg.chat.id,
-      text: `Không lưu được: ${err || "unknown"}`,
-    });
+    return this.tg.sendMessage({ chat_id: msg.chat.id, text: `Không lưu được: ${err || "unknown"}` });
   }
 
   kbPrivateWebapp() {
@@ -282,13 +280,52 @@ function handleTelegramUpdate(update) {
   const bot = new ExpenseBot(BOT_TOKEN, PUBLIC_WEB);
   bot.handleUpdate(update);
 }
-
-/** One-time setup helpers (giữ nguyên) */
-function setWebhook() {
-  const url = APPS_SCRIPT_URL;
-  console.log(url);
+// [ADDED] Tiện ích reset webhook + kiểm tra trạng thái
+function getWebhookStatus() {
   const tg = new TelegramBot(BOT_TOKEN);
-  tg.setWebhook(url);
+  return tg.api("getWebhookInfo", {}); // xem pending_update_count, last_error_message
+}
+function resetWebhook() {
+  const tg = new TelegramBot(BOT_TOKEN);
+  tg.api("deleteWebhook", { drop_pending_updates: true });
+  // giảm đồng thời hóa để hạn chế nhận update cùng lúc
+  tg.setWebhook(APPS_SCRIPT_URL, {
+    max_connections: 1,
+    // chỉ nhận những loại cần thiết để giảm nhiễu
+    allowed_updates: ["message", "edited_message", "callback_query"]
+  });
+}
+// [UPDATED] Quy trình: drop backlog → set webhook với options → verify
+function setWebhook() {
+  if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
+  const tg = new TelegramBot(BOT_TOKEN);
+
+  // 1) Xoá update tồn đọng để tránh xử lý lại các update cũ
+  try {
+    tg.api("deleteWebhook", { drop_pending_updates: true });
+  } catch (e) {
+    console.log("deleteWebhook error:", String(e));
+  }
+
+  // 2) Cài webhook với đồng thời hoá thấp + chỉ nhận loại cần thiết
+  const setOk = tg.api("setWebhook", {
+    url: APPS_SCRIPT_URL,
+    max_connections: 1,
+    allowed_updates: ["message", "edited_message", "callback_query"],
+  });
+
+  // 3) Kiểm tra trạng thái webhook
+  const info = tg.api("getWebhookInfo", {});
+  console.log(JSON.stringify({
+    set_ok: setOk === true,
+    url: info.url,
+    pending_update_count: info.pending_update_count,
+    last_error_date: info.last_error_date || null,
+    last_error_message: info.last_error_message || null,
+    ip_address: info.ip_address || null,
+  }));
+  bootstrap();
+  return info; // tiện cho việc gọi tay trong Apps Script editor
 }
 function bootstrap() {
   const bot = new ExpenseBot(BOT_TOKEN, PUBLIC_WEB);

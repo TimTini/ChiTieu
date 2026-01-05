@@ -1,6 +1,6 @@
 // filename: web/app.js
 // Mobile-first Telegram WebApp UI + caching + loading bar + sorted list + editor fixes
-const APPS_SCRIPT_ID = "AKfycbzAEGzlUSU3lCidrxlJcCCh5phJ0LYBjaqRsPSJ9hGXO1B8dP4Zr-JA9z5wbZRLTSarOg";
+const APPS_SCRIPT_ID = "AKfycby79DY6Q_QjdycDVHq3NkCtEUfYeUYWKvkWD0WpyROhCrUYHkBjysI67JrvEqfVOg2kqA";
 const APPS_SCRIPT_URL = `https://script.google.com/macros/s/${APPS_SCRIPT_ID}/exec`;
 const tg = window.Telegram?.WebApp;
 
